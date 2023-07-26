@@ -37,11 +37,14 @@ class BookingRepository extends BaseRepository
     protected $model;
     protected $mailer;
     protected $logger;
+    protected $request;
+    protected $userId;
+    protected $currentUser;
 
     /**
      * @param Job $model
      */
-    function __construct(Job $model, MailerInterface $mailer)
+    function __construct(Job $model, MailerInterface $mailer , $currentUser = null ,  $userId = null , $request = null)
     {
         parent::__construct($model);
         $this->mailer = $mailer;
@@ -49,74 +52,81 @@ class BookingRepository extends BaseRepository
 
         $this->logger->pushHandler(new StreamHandler(storage_path('logs/admin/laravel-' . date('Y-m-d') . '.log'), Logger::DEBUG));
         $this->logger->pushHandler(new FirePHPHandler());
+        $this->request = request();
+        $this->userId = $userId ? $userId : $this->request->user_id ;
+        $this->currentUser = $this->userId ?  User::find($this->userId) : null ;
+
     }
 
     /**
-     * @param $user_id
      * @return array
      */
-    public function getUsersJobs($user_id)
+
+    public function getUsersJobs()
     {
-        $cuser = User::find($user_id);
-        $usertype = '';
+        $userId = $this->userId ;
+        $currentUser = $this->currentUser ;
+        $userType = '';
         $emergencyJobs = array();
-        $noramlJobs = array();
-        if ($cuser && $cuser->is('customer')) {
-            $jobs = $cuser->jobs()->with('user.userMeta', 'user.average', 'translatorJobRel.user.average', 'language', 'feedback')->whereIn('status', ['pending', 'assigned', 'started'])->orderBy('due', 'asc')->get();
-            $usertype = 'customer';
-        } elseif ($cuser && $cuser->is('translator')) {
-            $jobs = Job::getTranslatorJobs($cuser->id, 'new');
+        $normalJobs = array();
+        if ($currentUser && $currentUser->is('customer')) {
+            $jobs = $currentUser->jobs()->with('user.userMeta', 'user.average', 'translatorJobRel.user.average', 'language', 'feedback')->whereIn('status', ['pending', 'assigned', 'started'])->orderBy('due', 'asc')->get();
+            $userType = 'customer';
+        } elseif ($currentUser && $currentUser->is('translator')) {
+            $jobs = Job::getTranslatorJobs($currentUser->id, 'new');
             $jobs = $jobs->pluck('jobs')->all();
-            $usertype = 'translator';
+            $userType = 'translator';
         }
         if ($jobs) {
             foreach ($jobs as $jobitem) {
                 if ($jobitem->immediate == 'yes') {
                     $emergencyJobs[] = $jobitem;
                 } else {
-                    $noramlJobs[] = $jobitem;
+                    $normalJobs[] = $jobitem;
                 }
             }
-            $noramlJobs = collect($noramlJobs)->each(function ($item, $key) use ($user_id) {
-                $item['usercheck'] = Job::checkParticularJob($user_id, $item);
+            $noramlJobs = collect($normalJobs)->each(function ($item, $key) use ($userId) {
+                $item['usercheck'] = Job::checkParticularJob($userId, $item);
             })->sortBy('due')->all();
         }
 
-        return ['emergencyJobs' => $emergencyJobs, 'noramlJobs' => $noramlJobs, 'cuser' => $cuser, 'usertype' => $usertype];
+        return ['emergencyJobs' => $emergencyJobs, 'normalJobs' => $normalJobs, 'currentUser' => $currentUser, 'userType' => $userType];
     }
 
     /**
      * @param $user_id
      * @return array
      */
-    public function getUsersJobsHistory($user_id, Request $request)
+    public function getUsersJobsHistory()
     {
-        $page = $request->get('page');
-        if (isset($page)) {
-            $pagenum = $page;
-        } else {
-            $pagenum = "1";
-        }
-        $cuser = User::find($user_id);
-        $usertype = '';
+        $userId = $this->userId ;
+        $userType = '';
         $emergencyJobs = array();
         $noramlJobs = array();
-        if ($cuser && $cuser->is('customer')) {
-            $jobs = $cuser->jobs()->with('user.userMeta', 'user.average', 'translatorJobRel.user.average', 'language', 'feedback', 'distance')->whereIn('status', ['completed', 'withdrawbefore24', 'withdrawafter24', 'timedout'])->orderBy('due', 'desc')->paginate(15);
-            $usertype = 'customer';
-            return ['emergencyJobs' => $emergencyJobs, 'noramlJobs' => [], 'jobs' => $jobs, 'cuser' => $cuser, 'usertype' => $usertype, 'numpages' => 0, 'pagenum' => 0];
-        } elseif ($cuser && $cuser->is('translator')) {
-            $jobs_ids = Job::getTranslatorJobsHistoric($cuser->id, 'historic', $pagenum);
+
+        $page = $this->request->get('page');
+        if (isset($page)) {
+            $pageNumber = $page;
+        } else {
+            $pageNumber = "1";
+        }
+
+        $currentUser = $this->currentUser ;
+
+        if ($currentUser && $currentUser->is('customer')) {
+
+            $jobs = $currentUser->jobs()->with('user.userMeta', 'user.average', 'translatorJobRel.user.average', 'language', 'feedback', 'distance')->whereIn('status', ['completed', 'withdrawbefore24', 'withdrawafter24', 'timedout'])->orderBy('due', 'desc')->paginate(15);
+            $userType = 'customer';
+            return ['emergencyJobs' => $emergencyJobs, 'noramlJobs' => [], 'jobs' => $jobs, 'cuser' => $currentUser, 'usertype' => $userType, 'numpages' => 0, 'pagenum' => 0];
+
+        } elseif ($currentUser && $currentUser->is('translator')) {
+            $jobs_ids = Job::getTranslatorJobsHistoric($currentUser->id, 'historic', $pageNumber);
             $totaljobs = $jobs_ids->total();
-            $numpages = ceil($totaljobs / 15);
-
-            $usertype = 'translator';
-
+            $numberOfPages = ceil($totaljobs / 15);
+            $userType = 'translator';
             $jobs = $jobs_ids;
-            $noramlJobs = $jobs_ids;
-//            $jobs['data'] = $noramlJobs;
-//            $jobs['total'] = $totaljobs;
-            return ['emergencyJobs' => $emergencyJobs, 'noramlJobs' => $noramlJobs, 'jobs' => $jobs, 'cuser' => $cuser, 'usertype' => $usertype, 'numpages' => $numpages, 'pagenum' => $pagenum];
+            $normalJobs = $jobs_ids;
+            return ['emergencyJobs' => $emergencyJobs, 'normalJobs' => $normalJobs, 'jobs' => $jobs, 'currentUser' => $currentUser, 'userType' => $userType, 'numberOfPages' => $numberOfPages, 'pageNumber' => $pageNumber];
         }
     }
 
@@ -127,8 +137,7 @@ class BookingRepository extends BaseRepository
      */
     public function store($user, $data)
     {
-
-        $immediatetime = 5;
+        $immediateTime = 5;
         $consumer_type = $user->userMeta->consumer_type;
         if ($user->user_type == env('CUSTOMER_ROLE_ID')) {
             $cuser = $user;
@@ -187,7 +196,7 @@ class BookingRepository extends BaseRepository
             }
 
             if ($data['immediate'] == 'yes') {
-                $due_carbon = Carbon::now()->addMinute($immediatetime);
+                $due_carbon = Carbon::now()->addMinute($immediateTime);
                 $data['due'] = $due_carbon->format('Y-m-d H:i:s');
                 $data['immediate'] = 'yes';
                 $data['customer_phone_type'] = 'yes';
@@ -843,7 +852,7 @@ class BookingRepository extends BaseRepository
      * @param $changedTranslator
      * @return bool
      */
-    private function changeTimedoutStatus($job, $data, $changedTranslator)
+    private function changeTimedOutStatus($job, $data, $changedTranslator)
     {
 //        if (in_array($data['status'], ['pending', 'assigned']) && date('Y-m-d H:i:s') <= $job->due) {
         $old_status = $job->status;
